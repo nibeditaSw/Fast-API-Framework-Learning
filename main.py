@@ -42,17 +42,31 @@ class PokemonUpdate(BaseModel):
 @app.get("/pokemon/", response_model=List[PokemonResponse])
 def read_pokemon(
     sort_by: str = Query(default="pokemon_id", description="Column to sort by", regex="^(pokemon_id)$"),
-    order: str = Query(default="asc", description="Sort order: 'asc' or 'desc'", regex="^(asc|desc)$")
+    order: str = Query(default="asc", description="Sort order: 'asc' or 'desc'", regex="^(asc|desc)$"),
+    search_column: str = Query(default="name", description="Column to search in"),
+    keyword: Optional[str] = Query(None, description="Keyword to search for")
 ):
     db = SessionLocal()
 
-    if order == "asc":
-        db_pokemon = db.query(Pokemon).order_by(asc(sort_by)).all()
-    else:
-        db_pokemon = db.query(Pokemon).order_by(desc(sort_by)).all()
+    query = db.query(Pokemon)
 
+    # Filter based on search
+    if keyword:
+        search_column_attr = getattr(Pokemon, search_column, None)
+        if search_column_attr is None:
+            db.close()
+            raise HTTPException(status_code=400, detail=f"Invalid search column: {search_column}")
+        query = query.filter(search_column_attr.ilike(f"%{keyword}%"))
+
+    # Sorting
+    if order == "asc":
+        query = query.order_by(asc(sort_by))
+    else:
+        query = query.order_by(desc(sort_by))
+
+    db_pokemon = query.all()
     db.close()
-    
+
     if not db_pokemon:
         raise HTTPException(status_code=404, detail="No Pokémon found")
 
