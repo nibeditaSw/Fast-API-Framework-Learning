@@ -52,13 +52,37 @@ def read_pokemon(
 
     query = db.query(Pokemon)
 
-    # Filter based on search
+    # Validate keyword datatype based on the search column
+    int_columns = ["total", "hp", "attack", "defense", "sp_atk", "sp_def", "speed", "generation"]
+    bool_columns = ["legendary"]
+    string_columns = ["name", "type_1", "type_2"]
+
     if keyword:
         search_column_attr = getattr(Pokemon, search_column, None)
         if search_column_attr is None:
             db.close()
             raise HTTPException(status_code=400, detail=f"Invalid search column: {search_column}")
-        query = query.filter(search_column_attr.ilike(f"%{keyword}%"))
+
+        # Validate integer columns
+        if search_column in int_columns:
+            if not keyword.isdigit():
+                db.close()
+                raise HTTPException(status_code=400, detail=f"Keyword must be an integer for the {search_column} column")
+            query = query.filter(search_column_attr == int(keyword))
+
+        # Validate boolean columns
+        elif search_column in bool_columns:
+            if keyword.lower() not in ['true', 'false']:
+                db.close()
+                raise HTTPException(status_code=400, detail=f"Keyword must be 'true' or 'false' for the {search_column} column")
+            query = query.filter(search_column_attr == (keyword.lower() == 'true'))
+
+        # Convert non-integer inputs to string for string columns
+        elif search_column in string_columns:
+            query = query.filter(search_column_attr.ilike(f"%{keyword}%"))
+        else:
+            db.close()
+            raise HTTPException(status_code=400, detail=f"Search not supported for column: {search_column}")
 
     # Sorting
     if order == "asc":
@@ -66,11 +90,9 @@ def read_pokemon(
     else:
         query = query.order_by(desc(sort_by))
 
-    db_pokemon = query.all()
-
     # Pagination
     offset = (page - 1) * limit  
-    db_pokemon = query.offset(offset).limit(limit).all()  
+    db_pokemon = query.offset(offset).limit(limit).all()
 
     db.close()
 
@@ -78,6 +100,7 @@ def read_pokemon(
         raise HTTPException(status_code=404, detail="No Pokémon found")
 
     return db_pokemon
+
 
 @app.delete("/pokemon/{number}", response_model=PokemonResponse)
 def delete_pokemon(number: int = Path(description="The number of the Pokémon to delete")):
@@ -145,7 +168,7 @@ def update_pokemon(number: int, pokemon: PokemonUpdate = Body(...)):
 
 
 def main():
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
 
 if __name__ == "__main__":
     main()
