@@ -1,9 +1,9 @@
+import uvicorn
 from fastapi import HTTPException, Path, Body, Query
 from pydantic import BaseModel
 from typing import Optional, List
-from pokemon_load_data import SessionLocal, Pokemon, app
-import uvicorn
 from sqlalchemy import asc, desc
+from pokemon_load_data import SessionLocal, Pokemon, app
 
 # Define Pydantic models
 class PokemonCreate(BaseModel):
@@ -44,7 +44,9 @@ def read_pokemon(
     sort_by: str = Query(default="pokemon_id", description="Column to sort by", regex="^(pokemon_id)$"),
     order: str = Query(default="asc", description="Sort order: 'asc' or 'desc'", regex="^(asc|desc)$"),
     search_column: str = Query(default="name", description="Column to search in"),
-    keyword: Optional[str] = Query(None, description="Keyword to search for")
+    keyword: Optional[str] = Query(None, description="Keyword to search for"),
+    page: int = Query(default=1, description="Page number to retrieve, starts at 1"),
+    limit: int = Query(default=10, description="Number of results per page")
 ):
     db = SessionLocal()
 
@@ -65,6 +67,11 @@ def read_pokemon(
         query = query.order_by(desc(sort_by))
 
     db_pokemon = query.all()
+
+    # Pagination
+    offset = (page - 1) * limit  
+    db_pokemon = query.offset(offset).limit(limit).all()  
+
     db.close()
 
     if not db_pokemon:
