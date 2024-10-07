@@ -1,55 +1,106 @@
 import uvicorn
-from fastapi import HTTPException, Path, Body, Query
-from pydantic import BaseModel
-from typing import Optional, List
+import requests
+from fastapi import FastAPI, Depends, HTTPException, Path, Body, Query
+from typing import Optional, Literal
 from sqlalchemy import asc, desc
-from pokemon_load_data import SessionLocal, Pokemon, app
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+from models import Pokemon
+from database import SessionLocal
+from schemas import (
+    PokemonPostPutInputSchema,
+    PokemonPatchInputSchema,
+    PokemonGetAllOutputSchema,
+    PokemonPostPatchPutOutputSchema,
+)
 
-# Define Pydantic models
-class PokemonCreate(BaseModel):
-    number: int
-    name: str
-    type_1: Optional[str] = None
-    type_2: Optional[str] = None
-    total: Optional[int] = 0
-    hp: Optional[int] = 0
-    attack: Optional[int] = 0
-    defense: Optional[int] = 0
-    sp_atk: Optional[int] = 0
-    sp_def: Optional[int] = 0
-    speed: Optional[int] = 0
-    generation: Optional[int] = 0
-    legendary: Optional[bool] = False
+# Load JSON Data
+app = FastAPI()
 
-class PokemonResponse(PokemonCreate):
-    pokemon_id: int
+# Dependency to get the database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-class PokemonUpdate(BaseModel):
-    name: str
-    type_1: Optional[str] = None
-    type_2: Optional[str] = None
-    total: Optional[int] = None
-    hp: Optional[int] = None
-    attack: Optional[int] = None
-    defense: Optional[int] = None
-    sp_atk: Optional[int] = None
-    sp_def: Optional[int] = None
-    speed: Optional[int] = None
-    generation: Optional[int] = None
-    legendary: Optional[bool] = None
+# Define accepted fields for sorting
+SORTABLE_FIELDS = Literal[
+    "pokemon_id", "name", "type_1", "type_2", "total",
+    "hp", "attack", "defense", "sp_atk", "sp_def", "speed", "generation", "legendary"
+]
 
 
-@app.get("/pokemon/", response_model=List[PokemonResponse])
+@app.post("/pokemon/load")
+def fetch_and_store(db: Session = Depends(get_db)):
+    # Fetch the JSON data from the URL
+    response = requests.get("https://coralvanda.github.io/pokemon_data.json")
+    data = response.json()
+
+    print(f"Data fetched: {len(data)} entries")
+
+    # Collect all existing Pokémon numbers from the database
+    existing_numbers = {pokemon.number for pokemon in db.query(Pokemon.number).all()}
+
+    # Collect Pokémon data for bulk insert
+    pokemon_data = []
+
+    for entry in data:
+        original_number = entry.get("#")
+        number = original_number
+
+        # Find the next available unique number
+        while number in existing_numbers or any(p['number'] == number for p in pokemon_data):
+            number += 1
+        
+        # If the number was incremented, log the change
+        if number != original_number:
+            print(f"Duplicate number {original_number} found. Assigning new number {number}.")
+
+        # Create a dictionary of Pokémon data for bulk insert
+        pokemon_data.append({
+            'number': number,
+            'name': entry.get("Name"),
+            'type_1': entry.get("Type 1"),
+            'type_2': entry.get("Type 2") if entry.get("Type 2") else None,
+            'total': entry.get("Total", 0),
+            'hp': entry.get("HP", 0),
+            'attack': entry.get("Attack", 0),
+            'defense': entry.get("Defense", 0),
+            'sp_atk': entry.get("Sp. Atk", 0),
+            'sp_def': entry.get("Sp. Def", 0),
+            'speed': entry.get("Speed", 0),
+            'generation': entry.get("Generation", 0),
+            'legendary': entry.get("Legendary", False)
+        })
+
+        # Add the new unique number to the set of existing numbers
+        existing_numbers.add(number)
+
+    # Perform bulk insert using bulk_insert_mappings
+    try:
+        db.bulk_insert_mappings(Pokemon, pokemon_data)
+        db.commit()
+        return {
+            "message": "Data successfully stored in the database",
+            "inserted": len(pokemon_data),
+        }
+    except SQLAlchemyError as e:
+        db.rollback()  
+        return {"error": str(e)}
+
+
+@app.get("/pokemon/", response_model=PokemonGetAllOutputSchema)
 def read_pokemon(
-    sort_by: str = Query(default="pokemon_id", description="Column to sort by", regex="^(pokemon_id)$"),
-    order: str = Query(default="asc", description="Sort order: 'asc' or 'desc'", regex="^(asc|desc)$"),
-    search_column: str = Query(default="name", description="Column to search in"),
+    sort_by: SORTABLE_FIELDS = Query(default="pokemon_id", description="Column to sort by"),
+    sort_order: Literal["asc", "desc"] = Query(default="asc", description="Sort order: 'asc' or 'desc'"),
+    search_column: Literal["name", "type_1", "type_2", "total", "hp", "attack", "defense", "sp_atk", "sp_def", "speed", "generation", "legendary"] = Query(default="name", description="Column to search in"),
     keyword: Optional[str] = Query(None, description="Keyword to search for"),
     page: int = Query(default=1, description="Page number to retrieve, starts at 1"),
-    limit: int = Query(default=10, description="Number of results per page")
+    limit: int = Query(default=10, description="Number of results per page"),
+    db: Session = Depends(get_db)
 ):
-    db = SessionLocal()
-
     query = db.query(Pokemon)
 
     # Validate keyword datatype based on the search column
@@ -60,20 +111,17 @@ def read_pokemon(
     if keyword:
         search_column_attr = getattr(Pokemon, search_column, None)
         if search_column_attr is None:
-            db.close()
             raise HTTPException(status_code=400, detail=f"Invalid search column: {search_column}")
 
         # Validate integer columns
         if search_column in int_columns:
             if not keyword.isdigit():
-                db.close()
                 raise HTTPException(status_code=400, detail=f"Keyword must be an integer for the {search_column} column")
             query = query.filter(search_column_attr == int(keyword))
 
         # Validate boolean columns
         elif search_column in bool_columns:
             if keyword.lower() not in ['true', 'false']:
-                db.close()
                 raise HTTPException(status_code=400, detail=f"Keyword must be 'true' or 'false' for the {search_column} column")
             query = query.filter(search_column_attr == (keyword.lower() == 'true'))
 
@@ -81,79 +129,54 @@ def read_pokemon(
         elif search_column in string_columns:
             query = query.filter(search_column_attr.ilike(f"%{keyword}%"))
         else:
-            db.close()
             raise HTTPException(status_code=400, detail=f"Search not supported for column: {search_column}")
 
     # Sorting
-    if order == "asc":
+    if sort_order == "asc":
         query = query.order_by(asc(sort_by))
     else:
         query = query.order_by(desc(sort_by))
 
     # Pagination
-    offset = (page - 1) * limit  
+    offset = (page - 1) * limit
     db_pokemon = query.offset(offset).limit(limit).all()
-
-    db.close()
 
     if not db_pokemon:
         raise HTTPException(status_code=404, detail="No Pokémon found")
 
-    return db_pokemon
+    return {"results": db_pokemon}
 
 
-@app.delete("/pokemon/{number}", response_model=PokemonResponse)
-def delete_pokemon(number: int = Path(description="The number of the Pokémon to delete")):
-    db = SessionLocal()
+@app.delete("/pokemon/{number}", response_model=PokemonPostPatchPutOutputSchema)
+def delete_pokemon(number: int = Path(description="The number of the Pokémon to delete"), db: Session = Depends(get_db)):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == number).first()
     if db_pokemon is None:
-        db.close()
         raise HTTPException(status_code=404, detail="Pokémon not found")
     db.delete(db_pokemon)
     db.commit()
-    db.close()
     return db_pokemon
 
-@app.post("/pokemon/", response_model=PokemonResponse)
-def create_pokemon(pokemon: PokemonCreate = Body(...)):
-    db = SessionLocal()
+@app.post("/pokemon/", response_model=PokemonPostPatchPutOutputSchema)
+def create_pokemon(pokemon: PokemonPostPutInputSchema = Body(...), db: Session = Depends(get_db)):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == pokemon.number, Pokemon.name == pokemon.name).first()
 
     if db_pokemon:
-        db.close()
         raise HTTPException(status_code=400, detail="Pokémon with this number and name already exists")
 
-    new_pokemon = Pokemon(
-        number=pokemon.number,
-        name=pokemon.name,
-        type_1=pokemon.type_1,
-        type_2=pokemon.type_2,
-        total=pokemon.total,
-        hp=pokemon.hp,
-        attack=pokemon.attack,
-        defense=pokemon.defense,
-        sp_atk=pokemon.sp_atk,
-        sp_def=pokemon.sp_def,
-        speed=pokemon.speed,
-        generation=pokemon.generation,
-        legendary=pokemon.legendary
-    )
+    new_pokemon = Pokemon(**pokemon.dict())
 
     db.add(new_pokemon)
     db.commit()
     db.refresh(new_pokemon)
-    db.close()
 
     return new_pokemon
 
 
-@app.put("/pokemon/{number}", response_model=PokemonResponse)
-def update_pokemon(number: int, pokemon: PokemonUpdate = Body(...)):
-    db = SessionLocal()
+@app.put("/pokemon/{number}", response_model=PokemonPostPatchPutOutputSchema)
+def update_pokemon(number: int, pokemon: PokemonPatchInputSchema = Body(...), db: Session = Depends(get_db)):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == number).first()
 
     if db_pokemon is None:
-        db.close()
         raise HTTPException(status_code=404, detail="Pokémon not found")
 
     for key, value in pokemon.dict(exclude_unset=True).items():
@@ -161,10 +184,8 @@ def update_pokemon(number: int, pokemon: PokemonUpdate = Body(...)):
 
     db.commit()
     db.refresh(db_pokemon)
-    db.close()
 
     return db_pokemon
-
 
 
 def main():
