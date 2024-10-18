@@ -13,6 +13,7 @@ from schemas import (
     PokemonGetAllOutputSchema,
     PokemonPostPatchPutOutputSchema,
 )
+from authorization import role_required
 
 # Load JSON Data
 app = FastAPI()
@@ -33,7 +34,7 @@ SORTABLE_FIELDS = Literal[
 
 
 @app.post("/pokemon/load")
-def fetch_and_store(db: Session = Depends(get_db)):
+def fetch_and_store(db: Session = Depends(get_db), role: str = Depends(role_required(["admin"]))):
     # Fetch the JSON data from the URL
     response = requests.get("https://coralvanda.github.io/pokemon_data.json")
     data = response.json()
@@ -83,7 +84,7 @@ def fetch_and_store(db: Session = Depends(get_db)):
         db.bulk_insert_mappings(Pokemon, pokemon_data)
         db.commit()
         return {
-            "message": "Data successfully stored in the database",
+            "message": "Authorized and Data successfully stored in the database",
             "inserted": len(pokemon_data),
         }
     except SQLAlchemyError as e:
@@ -99,7 +100,8 @@ def read_pokemon(
     keyword: Optional[str] = Query(None, description="Keyword to search for"),
     page: int = Query(default=1, description="Page number to retrieve, starts at 1"),
     limit: int = Query(default=10, description="Number of results per page"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    role: str = Depends(role_required(["admin", "user"]))
 ):
     query = db.query(Pokemon)
 
@@ -148,7 +150,7 @@ def read_pokemon(
 
 
 @app.delete("/pokemon/{number}", response_model=PokemonPostPatchPutOutputSchema)
-def delete_pokemon(number: int = Path(description="The number of the Pokémon to delete"), db: Session = Depends(get_db)):
+def delete_pokemon(number: int = Path(description="The number of the Pokémon to delete"), db: Session = Depends(get_db), role: str = Depends(role_required(["admin", "user"]))):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == number).first()
     if db_pokemon is None:
         raise HTTPException(status_code=404, detail="Pokémon not found")
@@ -157,7 +159,7 @@ def delete_pokemon(number: int = Path(description="The number of the Pokémon to
     return db_pokemon
 
 @app.post("/pokemon/", response_model=PokemonPostPatchPutOutputSchema)
-def create_pokemon(pokemon: PokemonPostPutInputSchema = Body(...), db: Session = Depends(get_db)):
+def create_pokemon(pokemon: PokemonPostPutInputSchema = Body(...), db: Session = Depends(get_db), role: str = Depends(role_required(["admin", "user"]))):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == pokemon.number, Pokemon.name == pokemon.name).first()
 
     if db_pokemon:
@@ -173,7 +175,7 @@ def create_pokemon(pokemon: PokemonPostPutInputSchema = Body(...), db: Session =
 
 
 @app.put("/pokemon/{number}", response_model=PokemonPostPatchPutOutputSchema)
-def update_pokemon(number: int, pokemon: PokemonPatchInputSchema = Body(...), db: Session = Depends(get_db)):
+def update_pokemon(number: int, pokemon: PokemonPatchInputSchema = Body(...), db: Session = Depends(get_db), role: str = Depends(role_required(["admin", "user"]))):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == number).first()
 
     if db_pokemon is None:
