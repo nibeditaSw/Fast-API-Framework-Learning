@@ -1,6 +1,6 @@
 import uvicorn
 import requests
-from fastapi import FastAPI, Depends, HTTPException, Path, Body, Query
+from fastapi import FastAPI, Depends, HTTPException, Path, Body, Query, status
 from typing import Optional, Literal
 from sqlalchemy import asc, desc
 from sqlalchemy.orm import Session
@@ -14,6 +14,7 @@ from schemas import (
     PokemonPostPatchPutOutputSchema,
 )
 from authorization import role_required
+from constants import SORTABLE_FIELDS, int_columns, bool_columns, string_columns, ADMIN_ROLE, USER_ROLE
 
 # Load JSON Data
 app = FastAPI()
@@ -26,15 +27,9 @@ def get_db():
     finally:
         db.close()
 
-# Define accepted fields for sorting
-SORTABLE_FIELDS = Literal[
-    "pokemon_id", "name", "type_1", "type_2", "total",
-    "hp", "attack", "defense", "sp_atk", "sp_def", "speed", "generation", "legendary"
-]
-
 
 @app.post("/pokemon/load")
-def fetch_and_store(db: Session = Depends(get_db), role: str = Depends(role_required(["admin"]))):
+def fetch_and_store(db: Session = Depends(get_db), role: str = Depends(role_required([ADMIN_ROLE]))):
     # Fetch the JSON data from the URL
     response = requests.get("https://coralvanda.github.io/pokemon_data.json")
     data = response.json()
@@ -101,14 +96,9 @@ def read_pokemon(
     page: int = Query(default=1, description="Page number to retrieve, starts at 1"),
     limit: int = Query(default=10, description="Number of results per page"),
     db: Session = Depends(get_db),
-    role: str = Depends(role_required(["admin", "user"]))
+    role: str = Depends(role_required([ADMIN_ROLE, USER_ROLE]))
 ):
     query = db.query(Pokemon)
-
-    # Validate keyword datatype based on the search column
-    int_columns = ["total", "hp", "attack", "defense", "sp_atk", "sp_def", "speed", "generation"]
-    bool_columns = ["legendary"]
-    string_columns = ["name", "type_1", "type_2"]
 
     if keyword:
         search_column_attr = getattr(Pokemon, search_column, None)
@@ -149,17 +139,17 @@ def read_pokemon(
     return {"results": db_pokemon}
 
 
-@app.delete("/pokemon/{number}", response_model=PokemonPostPatchPutOutputSchema)
-def delete_pokemon(number: int = Path(description="The number of the Pokémon to delete"), db: Session = Depends(get_db), role: str = Depends(role_required(["admin", "user"]))):
+@app.delete("/pokemon/{number}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_pokemon(number: int = Path(description="The number of the Pokémon to delete"), db: Session = Depends(get_db), role: str = Depends(role_required([ADMIN_ROLE, USER_ROLE]))):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == number).first()
     if db_pokemon is None:
         raise HTTPException(status_code=404, detail="Pokémon not found")
     db.delete(db_pokemon)
     db.commit()
-    return db_pokemon
+    # return db_pokemon
 
 @app.post("/pokemon/", response_model=PokemonPostPatchPutOutputSchema)
-def create_pokemon(pokemon: PokemonPostPutInputSchema = Body(...), db: Session = Depends(get_db), role: str = Depends(role_required(["admin", "user"]))):
+def create_pokemon(pokemon: PokemonPostPutInputSchema = Body(...), db: Session = Depends(get_db), role: str = Depends(role_required([ADMIN_ROLE, USER_ROLE]))):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == pokemon.number, Pokemon.name == pokemon.name).first()
 
     if db_pokemon:
@@ -175,7 +165,7 @@ def create_pokemon(pokemon: PokemonPostPutInputSchema = Body(...), db: Session =
 
 
 @app.put("/pokemon/{number}", response_model=PokemonPostPatchPutOutputSchema)
-def update_pokemon(number: int, pokemon: PokemonPatchInputSchema = Body(...), db: Session = Depends(get_db), role: str = Depends(role_required(["admin", "user"]))):
+def update_pokemon(number: int, pokemon: PokemonPatchInputSchema = Body(...), db: Session = Depends(get_db), role: str = Depends(role_required([ADMIN_ROLE, USER_ROLE]))):
     db_pokemon = db.query(Pokemon).filter(Pokemon.number == number).first()
 
     if db_pokemon is None:

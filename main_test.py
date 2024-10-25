@@ -75,9 +75,8 @@ def test_update_pokemon():
 
 def test_delete_pokemon():
     response = client.delete("/pokemon/999")
-    assert response.status_code == 200, f"Unexpected status code: {response.status_code}, Response: {response.json()}"
-    assert response.json()["name"] == "Testmon"
+    assert response.status_code == 204, f"Unexpected status code: {response.status_code}, Response: {response.content}"
 
+    # Verify that the Pokémon has been deleted
     response = client.get("/pokemon/?sort_by=number&keyword=999")
-    assert response.status_code == 404, f"Unexpected status code after deletion: {response.status_code}, Response: {response.json()}"
-
+    assert response.status_code == 404, f"Unexpected status code after deletion: {response.status_code}, Response: {response.content}"
